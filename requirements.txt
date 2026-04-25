@@ -1,0 +1,5 @@
+tensorflow>=2.15.0
+librosa
+pydub
+numpy
+pandas
