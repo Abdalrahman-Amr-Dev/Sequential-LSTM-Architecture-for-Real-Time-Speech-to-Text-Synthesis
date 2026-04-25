@@ -5,12 +5,12 @@ from tensorflow.keras import layers # type: ignore
 
 # 1. Dataset Setup (LJSpeech - 24 hours of English)
 data_url = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
-data_path = keras.utils.get_file("LJSpeech-1.1", data_url, extract=True)
-wavs_path = os.path.join(os.path.dirname(data_path), "LJSpeech-1.1/wavs")
-metadata_path = os.path.join(os.path.dirname(data_path), "LJSpeech-1.1/metadata.csv")
+data_dir = os.path.expanduser("~/.keras/datasets/LJSpeech-1_extracted/LJSpeech-1.1")
+wavs_path = os.path.join(data_dir, "wavs")
+metadata_path = os.path.join(data_dir, "metadata.csv")
 
 # Parse metadata
-with open(metadata_path, encoding="utf-16" if os.name == 'nt' else "utf-8") as f:
+with open(metadata_path, encoding="utf-8") as f:
     lines = f.readlines()
 split_lines = [line.strip().split("|") for line in lines]
 filenames = [os.path.join(wavs_path, x[0] + ".wav") for x in split_lines]
