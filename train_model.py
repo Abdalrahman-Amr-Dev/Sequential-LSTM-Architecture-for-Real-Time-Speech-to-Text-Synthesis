@@ -5,9 +5,26 @@ from tensorflow.keras import layers # type: ignore
 
 # 1. Dataset Setup (LJSpeech - 24 hours of English)
 data_url = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
-data_dir = os.path.expanduser("~/.keras/datasets/LJSpeech-1_extracted/LJSpeech-1.1")
+
+# Download and extract dataset
+data_path = keras.utils.get_file("LJSpeech-1.1", data_url, extract=True)
+
+# Find the extracted directory (handles both local and Colab)
+if os.path.isdir(data_path):
+    data_dir = data_path
+else:
+    data_dir = os.path.dirname(data_path)
+
+# Handle both single and nested directory structures
+if os.path.exists(os.path.join(data_dir, "LJSpeech-1.1")):
+    data_dir = os.path.join(data_dir, "LJSpeech-1.1")
+
 wavs_path = os.path.join(data_dir, "wavs")
 metadata_path = os.path.join(data_dir, "metadata.csv")
+
+# Verify files exist
+if not os.path.exists(metadata_path):
+    raise FileNotFoundError(f"metadata.csv not found at {metadata_path}. Available dirs: {os.listdir(os.path.dirname(data_dir)) if os.path.exists(os.path.dirname(data_dir)) else 'N/A'}")
 
 # Parse metadata
 with open(metadata_path, encoding="utf-8") as f:
@@ -48,8 +65,9 @@ def CTCLoss(y_true, y_pred):
     batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
     input_length = tf.cast(tf.shape(y_pred)[1], dtype="int64")
     label_length = tf.cast(tf.shape(y_true)[1], dtype="int64")
-    input_length = input_length * tf.ones(shape=(batch_len, 1), dtype="int64")
-    label_length = label_length * tf.ones(shape=(batch_len, 1), dtype="int64")
+    input_length = input_length * tf.ones(shape=(batch_len,), dtype="int64")
+    label_length = label_length * tf.ones(shape=(batch_len,), dtype="int64")
+    y_true = tf.cast(y_true, tf.int32)
     return tf.nn.ctc_loss(y_true, y_pred, label_length, input_length, logits_time_major=False)
 
 input_spectrogram = layers.Input(shape=(None, 193), name="input")
