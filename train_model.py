@@ -1,5 +1,4 @@
 import os
-import numpy as np
 import tensorflow as tf
 from tensorflow import keras # type: ignore
 from tensorflow.keras import layers # type: ignore
