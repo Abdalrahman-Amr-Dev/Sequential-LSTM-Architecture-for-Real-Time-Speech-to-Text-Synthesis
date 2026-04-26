@@ -1,39 +1,52 @@
 import os
 import tarfile
 import tensorflow as tf
-from tensorflow import keras # type: ignore
-from tensorflow.keras import layers # type: ignore
+from tensorflow import keras
+from tensorflow.keras import layers
 
 # 1. Enable Mixed Precision for faster GPU training
-from tensorflow.keras import mixed_precision # type: ignore
+from tensorflow.keras import mixed_precision
 policy = mixed_precision.Policy('mixed_float16')
 mixed_precision.set_global_policy(policy)
 
+# --- DIRECTORY FIX FOR NOTEBOOKS ---
+# In notebooks, __file__ doesn't exist. We use os.getcwd() instead.
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    script_dir = os.getcwd()
+
+cache_dir = os.path.join(script_dir, "cache")
+os.makedirs(cache_dir, exist_ok=True)
+# -----------------------------------
+
 # Download LJSpeech
 data_url = "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2"
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-cache_dir = os.path.join(script_dir, "cache")
 data_path = keras.utils.get_file("LJSpeech-1.1.tar.bz2", data_url, cache_dir=cache_dir)
 
 # Path Setup
-data_dir = os.path.join(script_dir, "datasets", "LJSpeech-1.1")
+# The tar file extracts into a folder named "LJSpeech-1.1"
+data_dir = os.path.join(os.path.dirname(data_path), "LJSpeech-1.1")
 wavs_path = os.path.join(data_dir, "wavs")
 metadata_path = os.path.join(data_dir, "metadata.csv")
 
 # Extract via Python only if not already extracted
 if not os.path.exists(data_dir):
     print("Extracting files... please wait ~2-3 minutes.")
-    os.makedirs(os.path.dirname(data_dir), exist_ok=True)
     with tarfile.open(data_path, mode='r:bz2') as tar:
-        tar.extractall(path=os.path.dirname(data_dir))
+        tar.extractall(path=os.path.dirname(data_path))
 else:
     print("Dataset already extracted.")
 
 # 1. Parse Metadata
+# Format: ID | Transcription | Normalized Transcription
 with open(metadata_path, encoding="utf-8") as f:
     lines = f.readlines()
+
 split_lines = [line.strip().split("|") for line in lines]
+# Ensure we only take lines that have the full 3 parts
+split_lines = [x for x in split_lines if len(x) == 3]
+
 filenames = [os.path.join(wavs_path, x[0] + ".wav") for x in split_lines]
 transcriptions = [x[2].lower() for x in split_lines]
 
@@ -44,14 +57,17 @@ num_to_char = layers.StringLookup(vocabulary=char_to_num.get_vocabulary(), oov_t
 
 # 3. Raw Audio Loader
 def encode_raw_audio(wav_file, transcription):
+    # Read file
     file = tf.io.read_file(wav_file)
+    # Decode wav
     audio, _ = tf.audio.decode_wav(file)
     audio = tf.squeeze(audio, axis=-1)
+    # Tokenize transcription
     label = char_to_num(tf.strings.unicode_split(transcription, input_encoding="UTF-8"))
     return audio, label
 
 # 4. Create Dataset
-batch_size = 32 # Increased batch size for GPU efficiency
+batch_size = 32 
 dataset = tf.data.Dataset.from_tensor_slices((filenames, transcriptions))
 dataset = (
     dataset.map(encode_raw_audio, num_parallel_calls=tf.data.AUTOTUNE)
@@ -59,7 +75,7 @@ dataset = (
     .prefetch(tf.data.AUTOTUNE)
 )
 
-# 1. CTC Loss Function
+# 5. CTC Loss Function
 def CTCLoss(y_true, y_pred):
     y_true = tf.cast(y_true, dtype="int32")
     batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
@@ -73,23 +89,24 @@ def CTCLoss(y_true, y_pred):
                           logit_length=input_length, logits_time_major=False)
     return tf.reduce_mean(loss)
 
-# 2. GPU Spectrogram Layer (Now with float32 casting fix)
+# 6. GPU Spectrogram Layer
 class SpectrogramLayer(layers.Layer):
     def call(self, inputs):
-        # STFT MUST be float32, so we cast explicitly
+        # STFT requires float32
         x = tf.cast(inputs, tf.float32)
         stfts = tf.signal.stft(x, frame_length=256, frame_step=160, fft_length=384)
         spectrogram = tf.abs(stfts)
         spectrogram = tf.math.pow(spectrogram, 0.5)
 
+        # Normalization
         means = tf.math.reduce_mean(spectrogram, 1, keepdims=True)
         stddevs = tf.math.reduce_std(spectrogram, 1, keepdims=True)
         normalized = (spectrogram - means) / (stddevs + 1e-10)
 
-        # Cast back to the global policy (float16) to keep the rest of the model fast
+        # Cast back to mixed precision policy (float16)
         return tf.cast(normalized, self.compute_dtype)
 
-# 3. Build DeepSpeech2 Lite
+# 7. Build DeepSpeech2 Lite
 def build_model(output_dim):
     input_audio = layers.Input(shape=(None,), name="input_audio")
 
@@ -101,7 +118,7 @@ def build_model(output_dim):
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
 
-    # Reshape for RNN
+    # Reshape for RNN (flattening the frequency and channel dimensions)
     x = layers.Reshape((-1, x.shape[-2] * x.shape[-1]))(x)
 
     # RNN Layers
@@ -118,6 +135,7 @@ model = build_model(output_dim=len(char_to_num.get_vocabulary()))
 model.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-4), loss=CTCLoss)
 model.summary()
 
+# 8. Output and Training
 output_dir = os.path.join(script_dir, "output")
 os.makedirs(output_dir, exist_ok=True)
 checkpoint_path = os.path.join(output_dir, "asr_best_model.h5")
@@ -127,17 +145,15 @@ callbacks = [
     keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)
 ]
 
-print("Training starting... CPU load is now minimal. GPU should be at high utilization.")
-
-# Diagnostic check for the presence of audio files
+# Diagnostic check
 if len(filenames) > 0:
     sample_audio_file = filenames[0]
     if not os.path.exists(sample_audio_file):
         print(f"Error: The audio file '{sample_audio_file}' was not found.")
-        print("Please ensure the dataset (especially the 'wavs' folder) is correctly extracted.")
-        print("You might need to delete the local datasets directory and re-run the extraction.")
-        raise FileNotFoundError(f"Missing dataset audio file: {sample_audio_file}")
+        print("Expected path:", sample_audio_file)
+        raise FileNotFoundError("Missing dataset audio file. Check extraction path.")
 
+print("Training starting...")
 model.fit(dataset, epochs=50, callbacks=callbacks)
 
 model.save(os.path.join(output_dir, "asr_final_model.h5"))
