@@ -1,5 +1,4 @@
-tensorflow>=2.15.0
-librosa
-pydub
+whisper
 numpy
-pandas
+Flask
+flask-socketio
