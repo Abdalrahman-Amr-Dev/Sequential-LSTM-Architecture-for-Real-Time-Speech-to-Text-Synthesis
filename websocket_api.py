@@ -1,3 +1,4 @@
+import os
 from flask import Flask , request  
 from flask_socketio import SocketIO, emit
 import numpy as np
@@ -8,9 +9,9 @@ from collections import deque
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 socketio = SocketIO(app, cors_allowed_origins="*")
-
+usedModel = os.getenv('WHISPER_MODEL', 'tiny')
 # Load model once
-model = whisper.load_model("tiny") 
+model = whisper.load_model(usedModel) 
 
 class RealTimeAudioProcessor:
     def __init__(self, sample_rate=16000, chunk_duration=0.5):
