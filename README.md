@@ -1,233 +1,106 @@
-# Real-Time Speech-to-Text API
+# Real-Time Speech-to-Text API Documentation
 
-A real-time socket-based API for speech-to-text transformation using OpenAI's Whisper model. Provides both raw socket and WebSocket implementations for real-time audio streaming and transcription.
+A WebSocket-based server that accepts raw audio streams, maintains a rolling buffer, and performs speech-to-text transcription using OpenAI's Whisper model.
 
-## Features
+## Overview
 
-✅ **Real-Time Audio Streaming** - Stream audio data continuously  
-✅ **Buffering System** - Automatic audio buffering (5-second default)  
-✅ **Multi-Client Support** - Handle multiple simultaneous connections  
-✅ **Two API Options** - Raw Socket or WebSocket (recommended)  
-✅ **JSON Protocol** - Simple, structured message format  
-✅ **Web Dashboard** - Browser-based testing interface (WebSocket only)
+This application provides a Flask-SocketIO implementation for real-time speech-to-text processing. The server maintains a 5-second rolling audio buffer and processes transcription requests on-demand.
 
-## Installation
+## Core Components
 
-1. Install dependencies:
+### Model Initialization
 
-```bash
-pip install -r requirements.txt
-```
+The application loads the Whisper model on startup.
 
-## API Options
+- **Model Selection**: Controlled by the `WHISPER_MODEL` environment variable (defaults to `tiny`)
+- **Device**: Runs on CPU by default (standard Whisper behavior unless specified)
 
-### Option 1: WebSocket API (Recommended)
+### RealTimeAudioProcessor Class
 
-**Best for:** Web clients, browsers, real-time updates
+Manages the audio data lifecycle with thread-safe operations on the audio buffer.
 
-```bash
-python websocket_api.py
-```
+#### `__init__(sample_rate=16000, chunk_duration=0.5)`
 
-- Access dashboard: `http://localhost:5000`
-- Supports browser audio recording
-- Automatic reconnection
-- Real-time transcription updates
+Initializes the processor with a rolling buffer that holds up to 5 seconds of audio data.
 
-**WebSocket Events:**
+- Sets up the sample rate
+- Creates a deque (double-ended queue) to act as a rolling buffer
+- Automatically discards oldest data when buffer exceeds capacity
 
-- `audio_stream` - Send audio data
-- `transcribe_request` - Request transcription
-- `clear_buffer` - Clear audio buffer
-- `buffer_update` - Server broadcasts buffer size
-- `transcription_result` - Server sends transcription
+#### `add_audio(audio_bytes)`
 
-### Option 2: Raw Socket API
+Receives raw binary audio data from the WebSocket.
 
-**Best for:** Native applications, lower overhead
+- Converts bytes into 32-bit floating-point NumPy array (Whisper format)
+- Appends data to the buffer
+- Uses `threading.Lock` for thread-safe concurrent write operations
 
-```bash
-python socket_api.py
-```
+#### `get_buffered_audio()`
 
-**Commands (JSON):**
+Consolidates the current state of the rolling buffer.
 
-1. **Send Audio:**
+- Converts deque into a single continuous NumPy array
+- Returns `None` if buffer is empty
 
-```json
-{
-  "command": "audio",
-  "data": "base64_encoded_audio"
-}
-```
+#### `transcribe_buffered()`
 
-2. **Request Transcription:**
+Performs speech-to-text conversion on buffered audio.
 
-```json
-{
-  "command": "transcribe"
-}
-```
+1. Retrieves current buffer
+2. Validates at least 1 second of audio exists (quality assurance)
+3. Passes audio to `model.transcribe()`
+4. Returns transcribed string or `None` on error/insufficient audio
 
-3. **Clear Buffer:**
+#### `clear_buffer()`
 
-```json
-{
-  "command": "clear"
-}
-```
+Resets the audio session by emptying the deque for a new stream.
 
-4. **Get Status:**
+### SocketIO Event Handlers
 
-```json
-{
-  "command": "status"
-}
-```
+Define the API's communication protocol with clients.
 
-## Usage Examples
+#### `@socketio.on('connect')`
 
-### Python Socket Client
+- Handles new client connections
+- Logs unique Session ID (sid)
+- Sends confirmation message to client
 
-```python
-from socket_client import SocketClient
-import numpy as np
+#### `@socketio.on('audio_stream')`
 
-# Connect to server
-client = SocketClient(host='localhost', port=5000)
-client.connect()
+- Receives continuous audio chunks from client
+- Extracts audio bytes from payload
+- Passes data to `processor.add_audio()`
+- Emits `buffer_update` with current sample count
 
-# Send audio data
-audio_data = np.random.randn(16000).astype(np.float32)  # 1 second @ 16kHz
-response = client.send_audio(audio_data)
+#### `@socketio.on('transcribe_request')`
 
-# Request transcription
-result = client.transcribe()
-print(result['text'])
+- Triggers server to process current buffer
+- Calls `processor.transcribe_buffered()`
+- Emits `transcription_result` with text and success boolean
 
-# Cleanup
-client.close()
-```
+#### `@socketio.on('clear_buffer')`
 
-### JavaScript WebSocket Client
+- Manual buffer management from client side
+- Calls `processor.clear_buffer()`
+- Notifies client that buffer size is 0
 
-```javascript
-const socket = io("http://localhost:5000");
+## Data Flow
 
-socket.on("connect", function () {
-  console.log("Connected!");
-});
-
-// Send audio
-socket.emit("audio_stream", {
-  audio: arrayBuffer,
-});
-
-// Request transcription
-socket.emit("transcribe_request", {});
-
-// Listen for results
-socket.on("transcription_result", function (data) {
-  console.log("Transcribed:", data.text);
-});
-```
-
-### cURL Socket Client Example
-
-```bash
-# Start server in one terminal
-python socket_api.py
-
-# Test in another terminal (using netcat)
-echo '{"command": "status"}' | nc localhost 5000
-```
-
-## Architecture
-
-```
-┌─────────────────┐
-│  Audio Client   │
-└────────┬────────┘
-         │
-    ┌────▼────┐
-    │ Socket  │ (JSON protocol)
-    │ Server  │
-    └────┬────┘
-         │
-    ┌────▼─────────────────┐
-    │ RealTimeAudioProcessor│
-    │ - Audio Buffer       │
-    │ - Threading Safety   │
-    └────┬─────────────────┘
-         │
-    ┌────▼─────────┐
-    │ Whisper Model│
-    │ Transcription│
-    └──────────────┘
-```
+1. **Connection**: Client connects via WebSocket
+2. **Streaming**: Client sends float32 audio chunks via `audio_stream` event
+3. **Buffering**: Server maintains last 5 seconds of audio in memory
+4. **Processing**: `transcribe_request` triggers Whisper on the 5-second window
+5. **Response**: Transcribed text sent back via `transcription_result` event
 
 ## Configuration
 
-Edit the server files to change:
+| Variable        | Description                                                     | Default              |
+| --------------- | --------------------------------------------------------------- | -------------------- |
+| `WHISPER_MODEL` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large`) | `tiny`               |
+| `SECRET_KEY`    | Flask session security key                                      | `your-secret-key...` |
+| `PORT`          | Server listening port                                           | `5000`               |
 
-```python
-# Host and port
-SocketServer(host='0.0.0.0', port=5000)
+## Technical Requirements
 
-# Audio buffer size (seconds)
-RealTimeAudioProcessor(chunk_duration=0.5)
-```
-
-## Performance Tips
-
-1. **Reduce Model Size** - Use `tiny` or `small` for faster inference:
-
-   ```python
-   model = whisper.load_model("tiny")  # Fastest
-   ```
-
-2. **Stream Processing** - Send audio in chunks rather than all at once
-
-3. **Buffer Management** - Transcribe periodically to avoid memory buildup
-
-4. **Threading** - Both servers use threading for concurrent clients
-
-## File Structure
-
-```
-.
-├── socket_api.py           # Raw socket server
-├── websocket_api.py        # WebSocket + Flask dashboard
-├── socket_client.py        # Python socket client example
-├── main.py                 # Original Whisper implementation
-└── requirements.txt        # Dependencies
-```
-
-## Troubleshooting
-
-**Connection refused?**
-
-- Ensure server is running: `python socket_api.py`
-- Check port is available: `netstat -an | grep 5000`
-
-**Slow transcription?**
-
-- Use smaller model: `"tiny"` or `"small"`
-- Check system resources (GPU available?)
-
-**Buffer issues?**
-
-- Increase buffer size in `RealTimeAudioProcessor`
-- Send audio less frequently
-
-## Hardware Requirements
-
-- **CPU**: 2+ cores recommended
-- **RAM**: 2GB minimum (4GB+ recommended)
-- **GPU**: Optional but recommended for faster transcription
-  - CUDA-capable GPU for faster processing
-  - Will automatically use GPU if available
-
-## License
-
-OpenAI Whisper - Apache 2.0
+- **Audio Format**: Raw float32 PCM audio at 16000Hz sample rate
+- **Concurrency**: Python threading ensures audio ingestion isn't blocked by transcription computation
