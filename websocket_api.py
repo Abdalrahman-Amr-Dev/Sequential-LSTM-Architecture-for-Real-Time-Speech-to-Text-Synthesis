@@ -10,6 +10,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 socketio = SocketIO(app, cors_allowed_origins="*")
 usedModel = os.getenv('WHISPER_MODEL', 'tiny')
+max_buffer_seconds = int(os.getenv('MAX_BUFFER_SECONDS', 50))  # Max buffer length in seconds
 # Load model once
 model = whisper.load_model(usedModel) 
 
@@ -18,7 +19,7 @@ class RealTimeAudioProcessor:
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
         self.chunk_size = int(sample_rate * chunk_duration)
-        self.audio_buffer = deque(maxlen=int(sample_rate * 5))  # 5 second buffer
+        self.audio_buffer = deque(maxlen=int(sample_rate * max_buffer_seconds))
         self.lock = threading.Lock()
     
     def add_audio(self, audio_bytes):
